@@ -1,3 +1,0 @@
-n_permutations_length,list_layers_sizes,lr,n_epoch,n_epoch_dqn,beam_width,i_step,flag_found_destination,mlp_losses,dqn_losses
-8,[512],0.001,30,300,1,28,True,0.6935778206934894,0.026729380578867028
-9,[512],0.001,30,300,1,39,True,1.4789312586297083,0.03413673995860985
