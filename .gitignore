@@ -2,22 +2,8 @@
 /.vscode
 /last
 /models/
-/notebooks/models/*.pth
-/notebooks/models/*.pt
-/notebooks/models/*.pkl
-/notebooks/models/*.json
-/notebooks/models/*.csv
-/notebooks/models/*.jsonl
-/notebooks/models/*.jsonl.gz
+/notebooks/models
 /src/__pycache__
 /src/models/__pycache__
 /src/search/__pycache__
 /src/utils/__pycache__
-#ignore all files pth format
-*.pth
-*.pt
-*.pkl
-*.json
-*.csv
-*.jsonl
-*.jsonl.gz
