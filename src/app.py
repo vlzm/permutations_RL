@@ -128,18 +128,10 @@ class PermutationSolver:
         self.dqn_trainer = DQNTrainer(
             model=self.dqn_model,
             criterion=torch.nn.MSELoss(),
-            optimizer=torch.optim.Adam(self.dqn_model.parameters(), lr=self.config['lr']),
+            optimizer=torch.optim.Adam(self.dqn_model.parameters(), lr=self.config['lr_dqn']),
             list_generators=self.list_generators,
             tensor_generators=self.tensor_generators,
-            cfg={
-                'n_epochs_dqn': self.config['n_epochs_dqn'],
-                'flag_dqn_round': self.config['flag_dqn_round'],
-                'n_random_walks_to_generate_dqn': self.config['n_random_walks_to_generate_dqn'],
-                'n_random_walk_length': self.config['n_random_walk_length'],
-                'n_random_walks_steps_back_to_ban': self.config['n_random_walks_steps_back_to_ban'],
-                'batch_size': self.config['batch_size'],
-                'verbose_loc': 50
-            },
+            cfg=self.config,
             state_destination=self.state_destination,
             random_walks_type=self.config['random_walks_type'],
             device=self.device
