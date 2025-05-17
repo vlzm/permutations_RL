@@ -11,7 +11,7 @@ from src.models.dqn_trainer import DQNTrainer
 from src.search.beam_search import beam_search_torch, initialize_states
 from src.utils.random_walks import get_neighbors
 from src.utils.random_walks import random_walks_nbt
-
+from src.utils.anchor import bfs_build_dataset
 
 class PermutationSolver:
     def __init__(self, config=None):
@@ -32,6 +32,9 @@ class PermutationSolver:
         
         # Device
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+        # Mode
+        self.mode = config.get('mode', 'single_hard_hinge')
         
     def get_default_config(self):
         n = 12  # n_permutations_length
@@ -124,9 +127,13 @@ class PermutationSolver:
                 dqn_sd[name].copy_(param.to(self.device))
         # Load the updated state dict back into the DQN model
         self.dqn_model.load_state_dict(dqn_sd)
+
+        X_anchor,y_anchor = self.generate_training_data_anchor()
         
         self.dqn_trainer = DQNTrainer(
             model=self.dqn_model,
+            X_anchor=X_anchor,
+            y_anchor=y_anchor,
             criterion=torch.nn.MSELoss(),
             optimizer=torch.optim.Adam(self.dqn_model.parameters(), lr=self.config['lr_dqn']),
             list_generators=self.list_generators,
@@ -167,6 +174,11 @@ class PermutationSolver:
         
         return X, y
     
+    def generate_training_data_anchor(self):
+        n = self.config['n_permutations_length']
+        X,y = bfs_build_dataset(self.state_destination, self.list_generators, self.device, num_of_samples=1_000_000)
+        return X, y
+    
     def train_mlp(self):
         """Train MLP model"""
         if self.mlp_model is None:
@@ -188,7 +200,10 @@ class PermutationSolver:
         """
         if self.dqn_trainer is None:
             self.setup_dqn_model()
-        history = self.dqn_trainer.train()
+        if self.mode == 'single_hard_hinge':
+            history = self.dqn_trainer.train_single_hard_hinge()
+        elif self.mode == 'double_soft_hinge':
+            history = self.dqn_trainer.train_double_soft_hinge()
         return history['train_loss']
     
     def test_beam_search(self):
