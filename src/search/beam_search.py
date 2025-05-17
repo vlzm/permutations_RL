@@ -201,3 +201,177 @@ def beam_search_torch(CFG, state_start, state_destination, list_generators, tens
     print('Found Path Length:', i_step, 'flag_found_destination:', flag_found_destination)
 
     return i_step, flag_found_destination
+
+def beam_search_path(
+    CFG: dict,
+    state_start: torch.Tensor,
+    state_destination: torch.Tensor,
+    list_generators: List[np.ndarray],
+    tensor_generators: torch.Tensor,
+    model: Any,
+    device: Union[str, torch.device],
+    dtype: torch.dtype
+) -> Tuple[int, bool, List[torch.Tensor]]:
+    """
+    Beam search with path reconstruction.
+
+    Returns:
+        i_step (int): номер шага, на котором найден путь (или последний шаг поиска).
+        flag_found (bool): True, если достигнуто состояние назначения.
+        path_states (List[torch.Tensor]): найденный маршрут (список состояний) или пустой список.
+    """
+    if not CFG.get('beam_search_torch', False):
+        return 0, False, []
+
+    # Определяем позицию перестановки (0,1) в list_generators
+    X_loc = np.array([1, 0] + list(np.arange(2, len(list_generators[0]))))
+    i_position_X = -1
+    for idx, move in enumerate(list_generators):
+        if np.array_equal(move, X_loc):
+            i_position_X = idx
+            break
+
+    # Инициализация глобальных списков для путей
+    list_states: List[torch.Tensor] = [state_start.clone()]
+    parent_idx: List[int] = [-1]
+    move_idx: List[int] = [-1]
+
+    # Текущие состояния луча (локальные индексы)
+    array_beam_states = state_start.view(1, -1).to(dtype).to(device)
+    beam_global_idx = torch.tensor([0], device=device, dtype=torch.long)
+
+    # Подготовка для non-backtracking (если нужна)
+    if CFG.get('n_beam_search_steps_back_to_ban', 0) > 0:
+        max_int = 2**62
+        vec_hasher = torch.randint(-max_int, max_int + 1,
+                                   size=(array_beam_states.size(1),),
+                                   device=device, dtype=torch.int64)
+        initial_hash = torch.sum(state_start * vec_hasher)
+        hash_storage = initial_hash.repeat(
+            CFG['beam_width'] * len(list_generators),
+            CFG['n_beam_search_steps_back_to_ban']
+        )
+        cyclic_hash_idx = 0
+    else:
+        vec_hasher = None
+
+    flag_found = False
+    path_states: List[torch.Tensor] = []
+
+    # Основной цикл
+    for i_step in range(1, CFG['n_steps_limit'] + 1):
+        # 1) Генерация соседей
+        if not CFG.get('ban_p0_p1_transposition_if_p0_lt_p1', False):
+            neighbors = get_neighbors(array_beam_states, tensor_generators)
+            array_new = neighbors.flatten(end_dim=1)
+            parent_new = beam_global_idx.repeat_interleave(len(list_generators))
+            moves_new = torch.arange(len(list_generators), device=device)
+            moves_new = moves_new.repeat(array_beam_states.size(0))
+        else:
+            array_parts, parent_parts, moves_parts = [], [], []
+            for move_idx_loc, move in enumerate(list_generators):
+                if move_idx_loc != i_position_X:
+                    tmp = array_beam_states[:, move]
+                    array_parts.append(tmp)
+                    parent_parts.append(beam_global_idx)
+                    moves_parts.append(torch.full((tmp.size(0),), move_idx_loc, device=device))
+                else:
+                    mask = array_beam_states[:, 0] > array_beam_states[:, 1]
+                    valid = array_beam_states[mask]
+                    tmp = valid[:, move]
+                    array_parts.append(tmp)
+                    parent_parts.append(beam_global_idx[mask])
+                    moves_parts.append(torch.full((tmp.size(0),), move_idx_loc, device=device))
+            array_new = torch.cat(array_parts, dim=0)
+            parent_new = torch.cat(parent_parts, dim=0)
+            moves_new = torch.cat(moves_parts, dim=0)
+
+        # 2) Убираем дубликаты (propagate parent & moves) вручную
+        seen = set()
+        keep = []
+        for idx_row in range(array_new.size(0)):
+            key = tuple(array_new[idx_row].tolist())
+            if key not in seen:
+                seen.add(key)
+                keep.append(idx_row)
+        keep = torch.tensor(keep, device=device)
+        array_new = array_new[keep]
+        parent_new = parent_new[keep]
+        moves_new = moves_new[keep]
+        # 3) Проверяем финиш
+        dest_mask = torch.all(array_new == state_destination, dim=1)
+
+        # 4) Добавляем в глобальные списки и запоминаем глобальные индексы
+        offset = len(list_states)
+        count_new = array_new.size(0)
+        global_idxs = torch.arange(offset, offset + count_new,
+                                   device=device, dtype=torch.long)
+
+        list_states.extend([s.clone().cpu() for s in array_new])
+        parent_idx.extend(parent_new.tolist())
+        move_idx.extend(moves_new.tolist())
+
+        if dest_mask.any().item():
+            first_hit = torch.nonzero(dest_mask, as_tuple=False)[0, 0].item()
+            dest_global = global_idxs[first_hit].item()
+            rev_path = []
+            while dest_global != -1:
+                rev_path.append(dest_global)
+                dest_global = parent_idx[dest_global]
+            rev_path.reverse()
+            path_states = [list_states[i] for i in rev_path]
+
+            print(CFG)
+            print()
+            print('beam_width:', CFG['beam_width'])
+            print('n=', len(list_generators[0]))
+            print('n(n-1)/2=', int(len(list_generators[0]) * (len(list_generators[0]) - 1) / 2))
+            print('Found Path Length:', i_step, 'flag_found_destination:', True)
+
+            return i_step, True, path_states
+
+        # 5) non-backtracking
+        if CFG.get('n_beam_search_steps_back_to_ban', 0) > 0:
+            new_hashes = torch.sum(array_new * vec_hasher, dim=1)
+            mask_nb = ~torch.isin(new_hashes, hash_storage.view(-1), assume_unique=False)
+            if mask_nb.sum().item() == 0:
+                break
+            array_new = array_new[mask_nb]
+            parent_new = parent_new[mask_nb]
+            moves_new = moves_new[mask_nb]
+
+            hash_storage[:new_hashes.size(0), cyclic_hash_idx] = new_hashes
+            cyclic_hash_idx = (cyclic_hash_idx + 1) % CFG['n_beam_search_steps_back_to_ban']
+            global_idxs = global_idxs[mask_nb]
+
+        # 6) Оценка и выбор top-K
+        if array_new.size(0) > CFG['beam_width']:
+            if CFG['beam_search_models_or_heuristics'] == 'model_torch':
+                model.eval()
+                with torch.no_grad():
+                    q_vals = torch.zeros(array_new.size(0), device=device)
+                    for b in range(0, array_new.size(0), CFG['batch_size']):
+                        e = min(b + CFG['batch_size'], array_new.size(0))
+                        q_vals[b:e] = model(array_new[b:e]).view(-1)
+            elif CFG['beam_search_models_or_heuristics'] == 'model_with_predict':
+                q_vals = torch.tensor(model.predict(array_new.cpu().numpy()), device=device)
+            elif CFG['beam_search_models_or_heuristics'] == 'Hamming':
+                q_vals = torch.sum((array_new - state_destination) != 0, dim=1)
+            else:
+                raise ValueError(f"Unknown heuristic: {CFG['beam_search_models_or_heuristics']}")
+            topk = torch.argsort(q_vals)[:CFG['beam_width']]
+            array_beam_states = array_new[topk]
+            beam_global_idx = global_idxs[topk]
+        else:
+            array_beam_states = array_new
+            beam_global_idx = global_idxs
+
+    print()
+    print(CFG)
+    print()
+    print('beam_width:', CFG['beam_width'])
+    print('n=', len(list_generators[0]))
+    print('n(n-1)/2=', int(len(list_generators[0]) * (len(list_generators[0]) - 1) / 2))
+    print('Found Path Length:', i_step, 'flag_found_destination:', False)
+
+    return i_step, False, []

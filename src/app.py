@@ -8,7 +8,7 @@ from src.models.mlp import PermutationMLP
 from src.models.dqn import DQN, DQNAgent, ReplayBuffer
 from src.models.mlp_trainer import MLPTrainer
 from src.models.dqn_trainer import DQNTrainer
-from src.search.beam_search import beam_search_torch, initialize_states
+from src.search.beam_search import beam_search_torch, initialize_states, beam_search_path
 from src.utils.random_walks import get_neighbors
 from src.utils.random_walks import random_walks_nbt
 from src.utils.anchor import bfs_build_dataset
@@ -208,7 +208,7 @@ class PermutationSolver:
     
     def test_beam_search(self):
         state_start, state_destination = initialize_states(self.list_generators, self.device)
-        results_df = beam_search_torch(self.config, state_start, state_destination, self.list_generators, self.tensor_generators, self.dqn_model, self.device, torch.int64)
+        results_df = beam_search_path(self.config, state_start, state_destination, self.list_generators, self.tensor_generators, self.dqn_model, self.device, torch.int64)
         
         return results_df
     

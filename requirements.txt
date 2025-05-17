@@ -5,4 +5,5 @@ matplotlib>=3.4.0
 seaborn>=0.11.0
 jupyter>=1.0.0
 pytest>=6.2.0 
-tqdm>=4.62.0s
+tqdm>=4.62.0
+ipywidgets>=7.6.0
