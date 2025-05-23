@@ -35,6 +35,10 @@ class PermutationSolver:
 
         # Mode
         self.mode = config.get('mode', 'single_hard_hinge')
+
+        # Training data
+        self.X_anchor = None
+        self.y_anchor = None
         
     def get_default_config(self):
         n = 12  # n_permutations_length
@@ -52,12 +56,13 @@ class PermutationSolver:
             'list_layers_sizes': [2**9],
             'n_epochs': 150,
             'batch_size': 1024,
-            'lr': 0.0001,
+            'lr_supervised': 0.0001,
             
             # DQN training
             'n_epochs_dqn': 300,
             'flag_dqn_round': False,
             'n_random_walks_to_generate_dqn': 1000,
+            'lr_rl': 0.0001,
             
             # Beam search
             'beam_search_torch': True,
@@ -99,7 +104,7 @@ class PermutationSolver:
         
         self.mlp_trainer = MLPTrainer(self.mlp_model, {
             'batch_size': self.config['batch_size'],
-            'learning_rate': self.config['lr'],
+            'learning_rate': self.config['lr_supervised'],
             'hidden_sizes': self.config['list_layers_sizes'],
             'n_random_walks_to_generate': self.config['n_random_walks_to_generate']
         })
@@ -128,14 +133,14 @@ class PermutationSolver:
         # Load the updated state dict back into the DQN model
         self.dqn_model.load_state_dict(dqn_sd)
 
-        X_anchor,y_anchor = self.generate_training_data_anchor()
+        self.X_anchor, self.y_anchor = self.generate_training_data_anchor()
         
         self.dqn_trainer = DQNTrainer(
-            model=self.dqn_model,
-            X_anchor=X_anchor,
-            y_anchor=y_anchor,
+            model=self.mlp_trainer.model,
+            X_anchor=self.X_anchor,
+            y_anchor=self.y_anchor,
             criterion=torch.nn.MSELoss(),
-            optimizer=torch.optim.Adam(self.dqn_model.parameters(), lr=self.config['lr_dqn']),
+            optimizer=self.mlp_trainer.optimizer,
             list_generators=self.list_generators,
             tensor_generators=self.tensor_generators,
             cfg=self.config,
