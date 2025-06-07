@@ -3,15 +3,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
-
-from src.models.mlp import PermutationMLP
+import sys
+from src.models.mlp import PermutationMLP, PermutationQuadMLP, PermutationQuadEquivariantMLP, DeepSetMLP, EquivariantSumMLP
 from src.models.dqn import DQN, DQNAgent, ReplayBuffer
-from src.models.mlp_trainer import MLPTrainer
+from src.models.mlp_trainer import MLPTrainer, QuadMLPTrainer
 from src.models.dqn_trainer import DQNTrainer
 from src.search.beam_search import beam_search_torch, initialize_states, beam_search_path
 from src.utils.random_walks import get_neighbors
 from src.utils.random_walks import random_walks_nbt
-from src.utils.anchor import bfs_build_dataset
+from src.utils.anchor import bfs_build_dataset, build_quadruples_from_bfs
+from sklearn.model_selection import train_test_split
 
 class PermutationSolver:
     def __init__(self, config=None):
@@ -39,6 +40,8 @@ class PermutationSolver:
         # Training data
         self.X_anchor = None
         self.y_anchor = None
+        self.X_test = None
+        self.y_test = None
         
     def get_default_config(self):
         n = 12  # n_permutations_length
@@ -93,22 +96,51 @@ class PermutationSolver:
         self.tensor_generators = torch.tensor(np.stack(self.list_generators), dtype=torch.int64, device=self.device)
         self.state_destination = torch.arange(n, device=self.device, dtype=torch.int64)
     
-    def setup_mlp_model(self):
+    def setup_mlp_model(self, mode='single'):
         """Initialize MLP model and trainer"""
         n = self.config['n_permutations_length']
-        self.mlp_model = PermutationMLP(
-            input_size=n,
-            hidden_dims=self.config['list_layers_sizes'],
-            num_classes_for_one_hot=n
-        ).to(self.device)
-        
-        self.mlp_trainer = MLPTrainer(self.mlp_model, {
+
+        if self.list_generators is None:
+            self._init_rw_generators()
+
+        self.X_anchor, self.y_anchor, self.X_test, self.y_test = self.generate_training_data_anchor(mode=mode)
+
+        if mode == 'quadruples':
+            self.mlp_model = PermutationQuadEquivariantMLP(
+                n=n,
+                hidden_dims=self.config['list_layers_sizes'],
+                num_classes=n
+            ).to(self.device)
+
+            self.mlp_trainer = QuadMLPTrainer(self.mlp_model, {
+                'batch_size': self.config['batch_size'],
+                'learning_rate': self.config['lr_supervised'],
+                'hidden_sizes': self.config['list_layers_sizes'],
+                'n_random_walks_to_generate': self.config['n_random_walks_to_generate']
+            }, self.tensor_generators)
+
+        elif mode == 'single':
+            self.mlp_model = EquivariantSumMLP(
+                n=n,
+                num_classes=n,
+                phi_dim=self.config['list_layers_sizes'][0],
+                mlp_hidden=self.config['list_layers_sizes'][1:]
+            ).to(self.device)
+
+            # self.mlp_model = PermutationMLP(
+            #     input_size=n,
+            #     hidden_dims=self.config['list_layers_sizes'],
+            #     num_classes_for_one_hot=n
+            # ).to(self.device)
+
+            self.mlp_trainer = MLPTrainer(self.mlp_model, {
             'batch_size': self.config['batch_size'],
             'learning_rate': self.config['lr_supervised'],
             'hidden_sizes': self.config['list_layers_sizes'],
             'n_random_walks_to_generate': self.config['n_random_walks_to_generate']
         })
-        
+
+             
     def setup_dqn_model(self):
         if self.mlp_model is None:
             raise ValueError("MLP model must be trained first")
@@ -133,13 +165,13 @@ class PermutationSolver:
         # Load the updated state dict back into the DQN model
         self.dqn_model.load_state_dict(dqn_sd)
 
-        self.X_anchor, self.y_anchor = self.generate_training_data_anchor()
+        self.X_anchor, self.y_anchor, self.X_test, self.y_test = self.generate_training_data_anchor()
         
         self.dqn_trainer = DQNTrainer(
             model=self.mlp_trainer.model,
             X_anchor=self.X_anchor,
             y_anchor=self.y_anchor,
-            criterion=torch.nn.MSELoss(),
+            criterion=self.mlp_trainer.criterion,
             optimizer=self.mlp_trainer.optimizer,
             list_generators=self.list_generators,
             tensor_generators=self.tensor_generators,
@@ -179,23 +211,44 @@ class PermutationSolver:
         
         return X, y
     
-    def generate_training_data_anchor(self):
+    def generate_training_data_anchor(self, num_of_samples=5_000_000, mode='single'):
         n = self.config['n_permutations_length']
-        X,y = bfs_build_dataset(self.state_destination, self.list_generators, self.device, num_of_samples=1_000_000)
-        return X, y
+        X,y = bfs_build_dataset(self.state_destination, self.list_generators, self.device, num_of_samples=num_of_samples)
+        if mode == 'quadruples':
+            X, y = build_quadruples_from_bfs(X, y, self.tensor_generators, self.device)
+
+        # define train and test sets
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.7, random_state=42)
+        return X_train, y_train, X_test, y_test
     
-    def train_mlp(self):
+    def train_mlp(self, mode='random_walks'):
         """Train MLP model"""
         if self.mlp_model is None:
             self.setup_mlp_model()
-            
-        mlp_losses = []
-        for epoch in tqdm(range(self.config['n_epochs']), desc="Training MLP"):
-            X, y = self.generate_training_data()
-            loss = self.mlp_trainer.train_epoch(X, y)
-            mlp_losses.append(loss)
-            if (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch + 1}, Loss: {loss:.4f}")
+        
+        if mode == 'random_walks':
+            print('Training MLP with random walks')
+            mlp_losses = []
+            n_epochs = self.config['n_epochs']
+            pbar = tqdm(range(n_epochs), desc="Training MLP with random walks")
+            for epoch in pbar:
+                X, y = self.generate_training_data()
+                loss = self.mlp_trainer.train_epoch(X, y)
+                mlp_losses.append(loss)
+                if (epoch + 1) % 10 == 0:
+                    # обновляем только postfix, не ломая самую прогресс-строку
+                    pbar.set_postfix(loss=f"{loss:.4f}")
+        elif mode == 'anchor':
+            print('Training MLP with anchor')
+            mlp_losses = []
+            n_epochs = self.config['n_epochs']
+            pbar = tqdm(range(n_epochs), desc="Training MLP with anchor")
+            for epoch in pbar:
+                loss = self.mlp_trainer.train_epoch(self.X_anchor, self.y_anchor)
+                mlp_losses.append(loss)
+                if (epoch + 1) % 10 == 0:
+                    # обновляем только postfix, не ломая самую прогресс-строку
+                    pbar.set_postfix(loss=f"{loss:.4f}")
         
         return mlp_losses
     

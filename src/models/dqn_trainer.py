@@ -7,6 +7,7 @@ import time
 import copy
 from tqdm import tqdm
 from src.utils.random_walks import random_walks_nbt, get_neighbors
+import torch.nn.functional as F
 
 class DQNTrainer:
     def __init__(self,
@@ -243,13 +244,9 @@ class DQNTrainer:
         history = {'train_loss': []}
         start_time = time.time()
         print(f"Starting DQN training for {n_epochs} epochs...")
+        pbar = tqdm(range(n_epochs), desc="Training MLP with random walks")
 
-        for epoch in tqdm(range(n_epochs), desc="Training DQN"):
-
-            if self.w_anchor > 0:
-                with torch.no_grad():
-                    # закешировать ВСЕ фичи якоря
-                    self.h_anchor_all = self.model(self.X_anchor).squeeze()
+        for epoch in pbar:
 
             t0 = time.time()
             X_train, y_train = self._generate_data()
@@ -280,9 +277,13 @@ class DQNTrainer:
                 anchor = 0.0
                 if self.w_anchor > 0:
                     idx = torch.randint(0, len(self.X_anchor), (batch_X.size(0),), device=self.device)
-                    h_anchor = self.h_anchor_all[idx]
-                    batch_upper_anchor = self.y_anchor[idx]
-                    anchor = torch.nn.functional.mse_loss(h_anchor, batch_upper_anchor.float(), reduction='mean')
+                    x_anchor = self.X_anchor[idx].to(self.device)
+                    with torch.no_grad():
+                        # таргет можно держать без градиента
+                        target_anchor = self.y_anchor[idx].float().to(self.device)
+
+                    h_anchor = self.model(x_anchor).squeeze()       # ← есть градиент
+                    anchor = F.mse_loss(h_anchor, target_anchor, reduction='mean')
 
                 loss = self.w_hinge * loss_hinge + self.w_anchor * anchor
 
@@ -299,84 +300,7 @@ class DQNTrainer:
             t_train = time.time() - t0
 
             if epoch % verbose == 0:
-                print(
-                    f"Epoch {epoch:3d} | Loss: {train_loss:.4f} | "
-                    f"Hinge: {loss_hinge:.4f} | Anchor: {anchor:.4f} | "
-                    f"Times - RW: {t_rw:.2f}s, Bellman: {t_bellman:.2f}s, Train: {t_train:.2f}s"
-                )
-
-        print(f"Training finished in {time.time() - start_time:.1f}s")
-        return history
-    
-    #########################################################
-    #########################################################
-    #########################################################
-
-    def train_single_soft_hinge(self):
-        """
-        Main training loop for DQN.
-        """
-        n_epochs = self.cfg['n_epochs_dqn']
-        verbose = self.cfg.get('verbose_loc', 10)
-
-        history = {'train_loss': []}
-        start_time = time.time()
-        print(f"Starting DQN training for {n_epochs} epochs...")
-
-        for epoch in tqdm(range(n_epochs), desc="Training DQN"):
-            t0 = time.time()
-            X_train, y_train = self._generate_data()
-            if verbose >= 100:
-                print(f"Epoch {epoch}: Generated data in {time.time() - t0:.2f}s")
-            t_rw = time.time() - t0
-
-            t0 = time.time()
-            y_train = self._compute_bellman_targets(X_train, y_train)
-            t_bellman = time.time() - t0
-
-            X_train, y_train = self._shuffle(X_train, y_train)
-
-            t0 = time.time()
-
-            self.model.train()
-            total_loss = 0.0
-            count = 0
-            n_states = X_train.shape[0]
-            for start in range(0, n_states, self.cfg['batch_size']):
-                end = min(start + self.cfg['batch_size'], n_states)
-                batch_X = X_train[start:end]
-                batch_y = y_train[start:end]
-
-                outputs = self.model(batch_X)
-                loss_hinge = self.criterion(outputs.squeeze(), batch_y)
-
-                anchor = 0.0
-                if self.w_anchor > 0:
-                    samples = np.random.choice(len(self.X_anchor), self.cfg['batch_size'], replace=False)
-                    h_anchor = self.model(self.X_anchor[samples]).squeeze()
-                    batch_upper_anchor = self.y_anchor[samples]
-                    anchor = torch.nn.functional.mse_loss(h_anchor, batch_upper_anchor.float(), reduction='mean')
-
-                loss = self.w_hinge * loss_hinge + self.w_anchor * anchor
-
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
-
-                total_loss += loss.item()
-                count += 1
-
-            train_loss = total_loss / count
-
-            history['train_loss'].append(train_loss)
-            t_train = time.time() - t0
-
-            if epoch % verbose == 0:
-                print(
-                    f"Epoch {epoch:3d} | Loss: {train_loss:.4f} | "
-                    f"Hinge: {loss_hinge:.4f} | Anchor: {anchor:.4f} | "
-                    f"Times - RW: {t_rw:.2f}s, Bellman: {t_bellman:.2f}s, Train: {t_train:.2f}s"
-                )
+                pbar.set_postfix(loss=f"{train_loss:.4f}, hinge: {loss_hinge:.4f}, anchor: {anchor:.4f}")
 
         print(f"Training finished in {time.time() - start_time:.1f}s")
         return history
