@@ -245,11 +245,12 @@ class PermutationSolver:
             pbar = tqdm(range(n_epochs), desc="Training MLP with anchor")
             for epoch in pbar:
                 loss = self.mlp_trainer.train_epoch(self.X_anchor, self.y_anchor)
+                test_loss = self.mlp_trainer.evaluate(self.X_test, self.y_test)
                 mlp_losses.append(loss)
                 if (epoch + 1) % 10 == 0:
                     # обновляем только postfix, не ломая самую прогресс-строку
-                    pbar.set_postfix(loss=f"{loss:.4f}")
-        
+                    pbar.set_postfix(train_loss=f"{loss:.4f}", test_loss=f"{test_loss:.4f}")
+
         return mlp_losses
     
     def train_dqn(self):
