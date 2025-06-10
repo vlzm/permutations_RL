@@ -257,7 +257,7 @@ class EquivariantSumMLP(nn.Module):
         assert n == self.n
 
         # one-hot -> shared embedding: (B,n,C) -> (B,n,d)
-        h_val = self.val_emb(F.one_hot(x, self.C).float())
+        h_val = self.val_emb(F.one_hot(x.to(torch.int64), self.C).float())
 
         # добавляем позиционный вес: broadcast (n,d) -> (B,n,d)
         h = h_val * self.pos_emb                 # element-wise

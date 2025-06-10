@@ -216,3 +216,20 @@ class MLPTrainer:
         train_loss /= cc
         
         return train_loss
+
+    def evaluate(self, X, y):
+        """Evaluate model on test data"""
+        self.model.eval()
+        n_samples = len(X)
+        test_loss = 0.0
+        cc = 0
+        with torch.no_grad():
+            for i_start_batch in range(0, n_samples, 2**16):
+                i_end_batch = min(i_start_batch + 2**16, n_samples)
+                X_batch = X[i_start_batch:i_end_batch].to(self.device)
+                y_batch = y[i_start_batch:i_end_batch].to(self.device)
+                outputs = self.model(X_batch)
+                test_loss += self.criterion(outputs.squeeze(), y_batch.float()).item()
+                cc+=1
+        test_loss /= cc
+        return test_loss

@@ -13,6 +13,9 @@ from src.utils.random_walks import get_neighbors
 from src.utils.random_walks import random_walks_nbt
 from src.utils.anchor import bfs_build_dataset, build_quadruples_from_bfs
 from sklearn.model_selection import train_test_split
+from torch.utils.tensorboard import SummaryWriter
+import json
+import os
 
 class PermutationSolver:
     def __init__(self, config=None):
@@ -43,6 +46,17 @@ class PermutationSolver:
         self.X_test = None
         self.y_test = None
         
+        self.mlp_exp_name = None
+        self.dqn_exp_name = None
+    
+    def get_unique_log_dir(self, base_name="runs/experiment_mlp"):
+        i = 1
+        log_dir = base_name
+        while os.path.exists(log_dir):
+            log_dir = f"{base_name}_{i}"
+            i += 1
+        return log_dir
+    
     def get_default_config(self):
         n = 12  # n_permutations_length
         return {
@@ -120,18 +134,18 @@ class PermutationSolver:
             }, self.tensor_generators)
 
         elif mode == 'single':
-            self.mlp_model = EquivariantSumMLP(
-                n=n,
-                num_classes=n,
-                phi_dim=self.config['list_layers_sizes'][0],
-                mlp_hidden=self.config['list_layers_sizes'][1:]
-            ).to(self.device)
-
-            # self.mlp_model = PermutationMLP(
-            #     input_size=n,
-            #     hidden_dims=self.config['list_layers_sizes'],
-            #     num_classes_for_one_hot=n
+            # self.mlp_model = EquivariantSumMLP(
+            #     n=n,
+            #     num_classes=n,
+            #     phi_dim=self.config['list_layers_sizes'][0],
+            #     mlp_hidden=self.config['list_layers_sizes'][1:]
             # ).to(self.device)
+
+            self.mlp_model = PermutationMLP(
+                input_size=n,
+                hidden_dims=self.config['list_layers_sizes'],
+                num_classes_for_one_hot=n
+            ).to(self.device)
 
             self.mlp_trainer = MLPTrainer(self.mlp_model, {
             'batch_size': self.config['batch_size'],
@@ -211,45 +225,67 @@ class PermutationSolver:
         
         return X, y
     
-    def generate_training_data_anchor(self, num_of_samples=5_000_000, mode='single'):
+    def generate_training_data_anchor(self, num_of_samples=1_000_000, mode='single'):
         n = self.config['n_permutations_length']
         X,y = bfs_build_dataset(self.state_destination, self.list_generators, self.device, num_of_samples=num_of_samples)
         if mode == 'quadruples':
             X, y = build_quadruples_from_bfs(X, y, self.tensor_generators, self.device)
 
         # define train and test sets
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.7, random_state=42)
+        # X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.7, random_state=42)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.01, random_state=42)
         return X_train, y_train, X_test, y_test
     
     def train_mlp(self, mode='random_walks'):
         """Train MLP model"""
         if self.mlp_model is None:
             self.setup_mlp_model()
-        
-        if mode == 'random_walks':
+        if mode == 0:
+            self.mlp_exp_name = self.get_unique_log_dir()
             print('Training MLP with random walks')
+            writer = SummaryWriter(f'{self.mlp_exp_name}')
+            writer.add_text("config", json.dumps(self.config, indent=2))
+
             mlp_losses = []
             n_epochs = self.config['n_epochs']
             pbar = tqdm(range(n_epochs), desc="Training MLP with random walks")
             for epoch in pbar:
                 X, y = self.generate_training_data()
                 loss = self.mlp_trainer.train_epoch(X, y)
+                writer.add_scalar('Loss/train', loss, epoch)
                 mlp_losses.append(loss)
                 if (epoch + 1) % 10 == 0:
                     # обновляем только postfix, не ломая самую прогресс-строку
                     pbar.set_postfix(loss=f"{loss:.4f}")
-        elif mode == 'anchor':
+                for name, param in self.mlp_model.named_parameters():
+                    writer.add_histogram(name, param.data, epoch)
+
+        elif mode == 1:
+            self.mlp_exp_name = self.get_unique_log_dir()
             print('Training MLP with anchor')
+            writer = SummaryWriter(f'{self.mlp_exp_name}')
             mlp_losses = []
             n_epochs = self.config['n_epochs']
             pbar = tqdm(range(n_epochs), desc="Training MLP with anchor")
             for epoch in pbar:
                 loss = self.mlp_trainer.train_epoch(self.X_anchor, self.y_anchor)
                 test_loss = self.mlp_trainer.evaluate(self.X_test, self.y_test)
+                writer.add_scalar('Loss/train', loss, epoch)
+                writer.add_scalar('Loss/test', test_loss, epoch)
+                writer.add_scalars('Loss', {
+                    'train': loss,
+                    'test': test_loss
+                }, epoch)
+                writer.add_text("config", json.dumps(self.config, indent=2))
                 mlp_losses.append(loss)
                 if (epoch + 1) % 10 == 0:
                     # обновляем только postfix, не ломая самую прогресс-строку
                     pbar.set_postfix(train_loss=f"{loss:.4f}", test_loss=f"{test_loss:.4f}")
+
+                for name, param in self.mlp_model.named_parameters():
+                    writer.add_histogram(name, param.data, epoch)
+            writer.close()
+
 
         return mlp_losses
     

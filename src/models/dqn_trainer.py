@@ -8,7 +8,9 @@ import copy
 from tqdm import tqdm
 from src.utils.random_walks import random_walks_nbt, get_neighbors
 import torch.nn.functional as F
-
+from torch.utils.tensorboard import SummaryWriter
+import json
+import os
 class DQNTrainer:
     def __init__(self,
                  model,
@@ -80,7 +82,15 @@ class DQNTrainer:
         Computes neighbor tensors for a batch of states.
         """
         return get_neighbors(X, self.tensor_generators)
-
+    
+    def get_unique_log_dir(self, base_name="runs/experiment_dqn"):
+        i = 1
+        log_dir = base_name
+        while os.path.exists(log_dir):
+            log_dir = f"{base_name}_{i}"
+            i += 1
+        return log_dir
+    
     def train_double_soft_hinge(self):
         """
         Main training loop for DQN with hinge-Bellman loss and replay buffer.
@@ -238,6 +248,11 @@ class DQNTrainer:
         """
         Main training loop for DQN.
         """
+        self.dqn_exp_name = self.get_unique_log_dir()
+        print('Training DQN with random walks')
+        writer = SummaryWriter(f'{self.dqn_exp_name}')
+        writer.add_text("config", json.dumps(self.cfg, indent=2))
+
         n_epochs = self.cfg['n_epochs_dqn']
         verbose = self.cfg.get('verbose_loc', 10)
 
@@ -299,8 +314,16 @@ class DQNTrainer:
             history['train_loss'].append(train_loss)
             t_train = time.time() - t0
 
+            writer.add_scalar('Loss/train', train_loss, epoch)
+            writer.add_scalar('Loss/hinge', loss_hinge, epoch)
+            writer.add_scalar('Loss/anchor', anchor, epoch)
+
+            for name, param in self.model.named_parameters():
+                writer.add_histogram(name, param.data, epoch)
+
             if epoch % verbose == 0:
                 pbar.set_postfix(loss=f"{train_loss:.4f}, hinge: {loss_hinge:.4f}, anchor: {anchor:.4f}")
 
         print(f"Training finished in {time.time() - start_time:.1f}s")
+        writer.close()
         return history
