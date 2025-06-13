@@ -7,3 +7,5 @@
 /src/models/__pycache__
 /src/search/__pycache__
 /src/utils/__pycache__
+/notebooks/runs/*
+/experiments/*

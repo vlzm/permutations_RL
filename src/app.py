@@ -16,12 +16,17 @@ from sklearn.model_selection import train_test_split
 from torch.utils.tensorboard import SummaryWriter
 import json
 import os
+from src.utils.device_manager import DeviceManager
 
 class PermutationSolver:
-    def __init__(self, config=None):
+    def __init__(self, config=None, gpu_id=None):
         if config is None:
             config = self.get_default_config()
         self.config = config
+        
+        # Initialize device manager
+        self.device_manager = DeviceManager(gpu_id)
+        self.device = self.device_manager.get_device()
         
         # Models and trainers
         self.mlp_model = None
@@ -34,9 +39,6 @@ class PermutationSolver:
         self.tensor_generators = None
         self.state_destination = None
         
-        # Device
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
         # Mode
         self.mode = config.get('mode', 'single_hard_hinge')
 
@@ -72,7 +74,8 @@ class PermutationSolver:
             'model_type': 'MLP',
             'list_layers_sizes': [2**9],
             'n_epochs': 150,
-            'batch_size': 1024,
+            'mlp_batch_size': 1024,
+            'dqn_batch_size': 1024,
             'lr_supervised': 0.0001,
             
             # DQN training
@@ -127,7 +130,7 @@ class PermutationSolver:
             ).to(self.device)
 
             self.mlp_trainer = QuadMLPTrainer(self.mlp_model, {
-                'batch_size': self.config['batch_size'],
+                'batch_size': self.config['mlp_batch_size'],
                 'learning_rate': self.config['lr_supervised'],
                 'hidden_sizes': self.config['list_layers_sizes'],
                 'n_random_walks_to_generate': self.config['n_random_walks_to_generate']
@@ -148,7 +151,7 @@ class PermutationSolver:
             ).to(self.device)
 
             self.mlp_trainer = MLPTrainer(self.mlp_model, {
-            'batch_size': self.config['batch_size'],
+            'batch_size': self.config['mlp_batch_size'],
             'learning_rate': self.config['lr_supervised'],
             'hidden_sizes': self.config['list_layers_sizes'],
             'n_random_walks_to_generate': self.config['n_random_walks_to_generate']

@@ -38,7 +38,7 @@ class DQNTrainer:
                 - n_random_walks_to_generate_dqn
                 - n_random_walk_length
                 - n_random_walks_steps_back_to_ban
-                - batch_size
+                - dqn_batch_size
             state_destination: Initial state for random walks.
             random_walks_type: Type of random walks.
             device: Torch device.
@@ -91,123 +91,6 @@ class DQNTrainer:
             i += 1
         return log_dir
     
-    def train_double_soft_hinge(self):
-        """
-        Main training loop for DQN with hinge-Bellman loss and replay buffer.
-        """
-        n_epochs = self.cfg['n_epochs_dqn']
-        verbose = self.cfg.get('verbose_loc', 10)
-        buffer_size = self.cfg.get('replay_buffer_size', 200_000)
-        batch_size = self.cfg['batch_size']
-        replay_start_size = self.cfg.get('replay_start_size', 5000)
-
-        # Create replay buffer
-        self.replay_buffer = deque(maxlen=buffer_size)
-
-        history = {'train_loss': []}
-        start_time = time.time()
-        print(f"Starting DQN training for {n_epochs} epochs...")
-
-        for epoch in tqdm(range(n_epochs), desc="Training DQN"):
-            t0 = time.time()
-            # --- 1. Сгенерировать новый набор блужданий ---
-            X_new, _ = self._generate_data()  # y_train не нужен!
-            
-            # --- 2. Добавить их в replay buffer ---
-            with torch.no_grad():
-                neighbors = self._compute_neighbors(X_new)
-                h_neigh = self.target_model(neighbors).view(X_new.size(0), -1)
-                upper_bounds = 1 + torch.min(h_neigh, dim=1)[0]  # Upper bounds: (B,)
-            
-            # for x, upper in zip(X_new, upper_bounds):
-            #     self.replay_buffer.append((x.cpu(), upper.cpu()))
-            
-            X_cpu = X_new.detach().cpu()
-            upper_cpu = upper_bounds.detach().cpu()
-            self.replay_buffer.extend(zip(X_cpu, upper_cpu))
-
-            t_rw = time.time() - t0
-
-            # --- 3. Обучение ---
-            t0 = time.time()
-            self.model.train()
-            total_loss = 0.0
-            count = 0
-
-            # Количество батчей в эпохе — примерно весь новый набор пройти
-            n_batches = max(1, len(X_new) // batch_size)
-
-            for _ in range(n_batches):
-                if len(self.replay_buffer) < replay_start_size:
-                    # Пока буфер мал, учим только на свежем X_new
-                    idx = torch.randint(0, X_new.size(0), (batch_size,))
-                    batch_X = X_new[idx].to(self.device)
-                else:
-                    samples = np.random.choice(len(self.replay_buffer), batch_size, replace=False)
-                    batch = [self.replay_buffer[i] for i in samples]
-                    batch_X, batch_upper = zip(*batch)
-                    batch_X = torch.stack(batch_X).to(self.device)
-                    batch_upper = torch.stack(batch_upper).to(self.device)
-
-                # --- 4. Прямой проход ---
-                h_s = self.model(batch_X).squeeze()
-
-                with torch.no_grad():
-                    neighbors = self._compute_neighbors(batch_X)
-                    h_neigh = self.target_model(neighbors).view(batch_X.size(0), -1)
-                    upper = 1 + torch.min(h_neigh, dim=1)[0]
-
-                # --- 5. Hinge loss ---
-                hinge = torch.relu(h_s - upper).mean()
-                tight = torch.relu(upper - h_s).mean()
-
-                # --- 6. Anchor MSE (если нужно) ---
-                anchor = 0.0
-                if self.w_anchor > 0:
-                    samples = np.random.choice(len(self.X_anchor), batch_size, replace=False)
-                    h_anchor = self.model(self.X_anchor[samples]).squeeze()
-                    batch_upper_anchor = self.y_anchor[samples]
-                    # Если batch_upper есть (например, при replay_buffer обучении)
-                    if len(batch_upper) > 0:
-                        anchor = torch.nn.functional.mse_loss(h_anchor, batch_upper_anchor.float(), reduction='mean')
-
-                hinge_loss = self.w_hinge * hinge
-                anchor_loss = self.w_anchor * anchor
-                tight_loss = self.w_tight * tight
-
-                loss = hinge_loss + anchor_loss + tight_loss
-
-                self.optimizer.zero_grad()
-                loss.backward()
-                # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 5.0)
-                self.optimizer.step()
-
-                total_loss += loss.item()
-                count += 1
-
-            train_loss = total_loss / count
-            history['train_loss'].append(train_loss)
-            t_train = time.time() - t0
-
-            # --- 7. Обновление target сети ---
-            if (epoch + 1) % self.sync_freq == 0:
-                self.target_model.load_state_dict(self.model.state_dict())
-            # tau = 0.05   # или 0.01–0.1
-            # for p_t, p in zip(self.target_model.parameters(),
-            #                 self.model.parameters()):
-            #     p_t.data.mul_(1 - tau).add_(tau * p.data)
-
-            # --- 8. Логирование ---
-            if epoch % verbose == 0:
-                print(
-                    f"Epoch {epoch:3d} | Loss: {train_loss:.4f} | "
-                    f"Hinge: {hinge_loss:.4f} | Anchor: {anchor_loss:.4f} | Tight: {tight_loss:.4f} | "
-                    f"Times - RW: {t_rw:.2f}s, Train: {t_train:.2f}s | "
-                    f"Buffer size: {len(self.replay_buffer)}"
-                )
-
-        print(f"Training finished in {time.time() - start_time:.1f}s")
-        return history
     
     #########################################################
     #########################################################
@@ -222,8 +105,8 @@ class DQNTrainer:
         self.model.eval()
         with torch.no_grad():
             neigb = self._compute_neighbors(X_train)
-            for start in range(0, n_states, self.cfg['batch_size']):
-                end = min(start + self.cfg['batch_size'], n_states)
+            for start in range(0, n_states, self.cfg['dqn_batch_size']):
+                end = min(start + self.cfg['dqn_batch_size'], n_states)
                 y_pred = self.model(neigb[start:end])
                 y_pred = 1 + torch.min(y_pred, dim=1)[0]
                 y_bellman[start:end] = y_pred.reshape(-1)
@@ -281,8 +164,8 @@ class DQNTrainer:
             total_loss = 0.0
             count = 0
             n_states = X_train.shape[0]
-            for start in range(0, n_states, self.cfg['batch_size']):
-                end = min(start + self.cfg['batch_size'], n_states)
+            for start in range(0, n_states, self.cfg['dqn_batch_size']):
+                end = min(start + self.cfg['dqn_batch_size'], n_states)
                 batch_X = X_train[start:end]
                 batch_y = y_train[start:end]
 
